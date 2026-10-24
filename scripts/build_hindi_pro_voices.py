@@ -235,8 +235,12 @@ def clean_ref(sr, s, lead=0.15, tail=0.30):
         a = max(0, voiced[0] * n - int(lead * sr))
         b = min(len(s), (voiced[-1] + 1) * n + int(tail * sr))
         s = s[a:b]
+        # speech that starts on sample 0 gets its lead-in silence added
+        pad = int(lead * sr) - voiced[0] * n
+        if pad > 0:
+            s = array.array("h", [0]) * pad + s
     s = gate(sr, s)
-    peak =max((abs(x) for x in s), default=1) or 1
+    peak = max((abs(x) for x in s), default=1) or 1
     g = (32768 * 10 ** (-1 / 20)) / peak
     out = array.array("h", (max(-32768, min(32767, int(x * g))) for x in s))
     f = int(0.01 * sr)
@@ -309,9 +313,15 @@ def score_take(text: str, wav: bytes):
         probs.append(f"noise floor {a['floor_db']:.0f} dB")
     if a["tail_db"] > -38:
         probs.append(f"tail cut ({a['tail_db']:.0f} dB at end)")
-    if a["head_db"] > -38:
+    # VoxCPM2 starts speaking on the very first frame in most takes (even
+    # with ASR match 1.0), so a loud head is only a cut when the ASR lost
+    # the opening words; clean_ref() pads the missing lead-in.
+    if a["head_db"] > -38 and (a["match"] or 0) < 0.9:
         probs.append(f"head cut ({a['head_db']:.0f} dB at start)")
-    if not 0.55 <= a["len_ratio"] <= 1.7:
+    # Slow styles (whisper, meditation, luxury) run long on purpose; extra
+    # babble would also add ASR words and pull the match down.
+    slow_ok = (a["match"] or 0) >= 0.9 and a["len_ratio"] <= 2.8
+    if a["len_ratio"] < 0.55 or (a["len_ratio"] > 1.7 and not slow_ok):
         probs.append(f"length {a['len_ratio']:.2f}x")
     if a["match"] is not None and a["match"] < 0.78:
         probs.append(f"asr match {a['match']:.2f}")
